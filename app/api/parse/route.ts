@@ -8,6 +8,7 @@ export const maxDuration = 30;
 
 export const POST = handle(async (req) => {
   const body = await readJson(req, ParseBodySchema);
-  const datos = await cargarDatos(getSheetRepo());
-  return parsear(body, datos);
+  const repo = getSheetRepo();
+  const datos = await cargarDatos(repo);
+  return parsear(body, datos, { repo });
 });

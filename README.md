@@ -50,13 +50,14 @@ viene en el JSON (con `\n` literales).
 | Ruta | Body | Respuesta |
 |---|---|---|
 | `POST /api/parse` | `{ text, previousDraft?, correction?, history?, answer? }` | `{ status: "ok", summary, draft, history: "" }` o `{ status: "question", question, history }` |
-| `POST /api/commit` | `{ draft }` | `{ message, rows, previous }` (409 si una fila a actualizar cambió) |
-| `POST /api/undo` | `{ rows?, previous? }` | `{ message, rows, previous }` |
+| `POST /api/commit` | `{ draft }` | `{ message, rows, previous, hidden, shown }` (409 si una fila a actualizar cambió) |
+| `POST /api/undo` | `{ rows?, previous?, hidden?, shown? }` | `{ message, rows, previous, hidden, shown }` |
 | `GET /api/health` | | `{ ok: true }` |
 
-`rows` son las filas insertadas y `previous` los valores que tenían las filas actualizadas antes del
-commit. Para deshacer todo, manda a `/api/undo` la respuesta del commit tal cual: limpia los inserts y
-restaura los updates (409 si el concepto de una fila actualizada cambió desde entonces).
+`rows` son las filas insertadas (también las de un inicio de mes), `previous` los valores que tenían
+las filas actualizadas, y `hidden` / `shown` las filas que el commit ocultó o mostró. Para deshacer todo,
+manda a `/api/undo` la respuesta del commit tal cual: limpia los inserts, restaura los updates (409 si el
+concepto de una fila actualizada cambió desde entonces) y revierte la visibilidad de solo esas filas.
 
 Los errores responden `{ error }` con el status correspondiente (400, 401, 409, 422, 500, 502).
 
@@ -94,6 +95,32 @@ vacías (`""` o `null`) cuentan como ausentes, así que el Atajo puede mandar si
 - Si mencionas un saldo ("tengo 1.200 en Deel"), se compara con `Cuentas!C` (saldo calculado) y, si
   difiere, se agrega un Ajuste: "Ajuste: Deel −12 USD (saldo dicho 1.200 vs Sheet 1.212)". Se puede quitar
   con *Corregir*.
+
+### Inicio de mes y ocultar/mostrar filas
+
+Solo se ejecutan cuando los pides desde el Atajo (no hay nada automático) y pasan por el mismo
+*Guardar / Corregir / Cancelar*. El summary dice cuántas filas y cuáles antes de confirmar.
+
+| Frase | Operación | Summary |
+|---|---|---|
+| "empieza el mes", "empieza noviembre" | `start_month { mes }` | `Inicio 2026-11: 27 filas Pendiente nuevas (filas 101–127) · 2 con el monto Pagado de 2026-10` |
+| "oculta las filas de septiembre" | `hide_rows { filtro: { mes } }` | `Ocultar 28 filas de 2026-09 (filas 43–70) · 1 ya estaba oculta` |
+| "oculta las filas del 1 al 15 de octubre" | `hide_rows { filtro: { desde, hasta } }` | `Ocultar 5 filas del 01 oct al 15 oct (filas 71–72, 98–100) · 24 Pendiente quedan visibles` |
+| "oculta las filas 2 a 40" | `hide_rows { filtro: { filaDesde, filaHasta } }` | |
+| "oculta septiembre incluyendo pendientes" | `hide_rows { filtro: { mes, incluirPendientes } }` | |
+| "oculta todo antes de octubre" | `hide_rows { filtro: { antesDe } }` | |
+| "muéstrame todo", "muestra las filas de septiembre" | `show_rows { filtro: { todo } }` / `{ mes }` | `Mostrar 41 filas ocultas (filas 2–42)` |
+
+- **Inicio de mes** copia la Plantilla Mensual (filas con Tipo en C, desde la fila 5) al final de
+  Movimientos con A = día 1 y O = Pendiente, con las mismas reglas de escritura (fórmulas, es_CO). El monto
+  sale de la fila del mismo concepto del día 1 del mes anterior si quedó Pagado; si no, de la plantilla.
+  No duplica: los conceptos que ya están el día 1 de ese mes se saltan y se avisa ("ya existían"). No
+  oculta nada.
+- **Ocultar** nunca toca la fila 1 ni, por defecto, las filas Pendiente (solo con "incluyendo
+  pendientes"). Las filas que ya estaban ocultas no se cuentan como cambios, así que deshacer no muestra
+  filas que tú habías ocultado antes.
+- **Deshacer**: las filas de un inicio de mes se limpian como cualquier insert (las fórmulas quedan), y
+  la visibilidad vuelve a como estaba.
 
 ## Ejemplos
 
@@ -178,11 +205,15 @@ npm run smoke -- --commit  # además inserta una fila de PRUEBA en el Sheet real
 ```
 
 Revisa variables, acceso al Sheet (hojas, cuentas, catálogo, pendientes, fórmulas), la API key y el
-modelo, la fórmula P de una fila USD real, auth, los 6 casos de ejemplo, una corrección y los errores 400.
+modelo, la fórmula P de una fila USD real, auth, los casos de ejemplo (movimientos, conversiones, una
+pregunta con su respuesta y las frases de inicio de mes y ocultar/mostrar, estas solo como borrador), una
+corrección y los errores 400.
 Con `--commit` hace un commit real (un insert COP, un insert USD y un update de una fila Pendiente, todo
 marcado "PRUEBA smoke-test") y lo deshace: verifica que A quede como fecha, que B, Q y P calculen sin
 `#ERROR!`, que la fórmula P que escribe la API sea idéntica a la del Sheet y que la fila actualizada quede
-exactamente como estaba.
+exactamente como estaba. Después inicia un mes de prueba (2031-01), comprueba que no se duplica, que
+ocultar sin "incluyendo pendientes" no oculta nada y que con él oculta las filas del mes, y lo limpia todo
+(filas y visibilidad quedan como antes).
 Escribe `reports/smoke-<fecha>.md` y `.json` (con log del servidor y sin secretos). `reports/` está en
 `.gitignore` porque contiene datos del Sheet.
 
@@ -195,6 +226,7 @@ lib/reglas.md       reglas de negocio (system prompt)
 lib/claude.ts       prompt, llamada a Claude, preguntas y reintento con errores de validación
 lib/parse.ts        /api/parse: rondas de preguntas, history y answer
 lib/conversion.ts   monto recibido con tasa/comisión del proveedor y Ajustes de saldo
+lib/month.ts        inicio de mes (Plantilla Mensual) y ocultar/mostrar filas
 lib/validate.ts     reglas por tipo, moneda vs cuenta, catálogo, updates
 lib/data.ts         lectura de Cuentas, Catálogo y contexto (caché 60 s)
 lib/rows.ts         construcción de escrituras por fila y fórmulas

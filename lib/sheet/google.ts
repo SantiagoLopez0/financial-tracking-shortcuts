@@ -1,10 +1,11 @@
 import type { sheets_v4 } from "googleapis";
 import { localizarFormula, type Cell, type Write } from "../rows";
-import type { SheetRepo } from "./repo";
+import { tramos, type SheetRepo } from "./repo";
 
 export class GoogleSheetRepo implements SheetRepo {
   private client?: Promise<sheets_v4.Sheets>;
   private separador?: Promise<"," | ";">;
+  private sheetIds?: Promise<Map<string, number>>;
 
   constructor(
     private readonly spreadsheetId: string,
@@ -65,6 +66,55 @@ export class GoogleSheetRepo implements SheetRepo {
 
   getFormulas(ranges: string[]): Promise<Cell[][][]> {
     return this.batchGet(ranges, "FORMULA");
+  }
+
+  /** sheetId de cada hoja por título (lo pide updateDimensionProperties). */
+  private sheetId(sheet: string): Promise<number> {
+    this.sheetIds ??= (async () => {
+      const sheets = await this.sheets();
+      const res = await sheets.spreadsheets.get({
+        spreadsheetId: this.spreadsheetId,
+        fields: "sheets(properties(sheetId,title))",
+      });
+      return new Map((res.data.sheets ?? []).map((s) => [s.properties!.title!, s.properties!.sheetId!]));
+    })().catch((err) => {
+      this.sheetIds = undefined;
+      throw err;
+    });
+    return this.sheetIds.then((ids) => {
+      const id = ids.get(sheet);
+      if (id === undefined) throw new Error(`No existe la hoja "${sheet}"`);
+      return id;
+    });
+  }
+
+  async getHiddenRows(sheet: string, ultimaFila: number): Promise<number[]> {
+    const sheets = await this.sheets();
+    const res = await sheets.spreadsheets.get({
+      spreadsheetId: this.spreadsheetId,
+      ranges: [`'${sheet.replace(/'/g, "''")}'!A1:A${ultimaFila}`],
+      fields: "sheets(data(startRow,rowMetadata(hiddenByUser)))",
+    });
+    const data = res.data.sheets?.[0]?.data?.[0];
+    const inicio = data?.startRow ?? 0;
+    return (data?.rowMetadata ?? []).flatMap((m, i) => (m.hiddenByUser ? [inicio + i + 1] : []));
+  }
+
+  async setRowsHidden(sheet: string, rows: number[], hidden: boolean): Promise<void> {
+    if (rows.length === 0) return;
+    const [sheets, sheetId] = await Promise.all([this.sheets(), this.sheetId(sheet)]);
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId: this.spreadsheetId,
+      requestBody: {
+        requests: tramos(rows).map(([a, b]) => ({
+          updateDimensionProperties: {
+            range: { sheetId, dimension: "ROWS", startIndex: a - 1, endIndex: b },
+            properties: { hiddenByUser: hidden },
+            fields: "hiddenByUser",
+          },
+        })),
+      },
+    });
   }
 
   async batchUpdate(data: Write[]): Promise<void> {

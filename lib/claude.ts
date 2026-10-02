@@ -141,7 +141,7 @@ function herramienta(): Anthropic.Tool {
   return {
     name: TOOL_NAME,
     description:
-      "Registra las operaciones que salen del texto: insert para movimientos nuevos, update para marcar/ajustar una fila existente (por ejemplo una Pendiente que se pagó). Incluye en assumptions todo lo que supusiste. Si falta algo que no se puede suponer (ver reglas de preguntas), deja operations vacío y llena question.",
+      "Registra las operaciones que salen del texto: insert para movimientos nuevos, update para marcar/ajustar una fila existente (por ejemplo una Pendiente que se pagó), start_month para iniciar un mes con la Plantilla Mensual, hide_rows / show_rows para ocultar o mostrar filas de Movimientos. Incluye en assumptions todo lo que supusiste. Si falta algo que no se puede suponer (ver reglas de preguntas), deja operations vacío y llena question.",
     // Sin strict: con strict el decoding restringido omite casi siempre los campos opcionales
     // (cuentas y montos). El input se valida igual con zod y con las reglas, y se reintenta.
     input_schema: toolInputJsonSchema() as Anthropic.Tool.InputSchema,

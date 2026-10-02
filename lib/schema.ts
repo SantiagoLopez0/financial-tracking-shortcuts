@@ -63,8 +63,50 @@ export const UpdateOperationSchema = z.object({
   }),
 });
 
-// z.union (no discriminatedUnion) para que el JSON schema use anyOf, que es lo que acepta strict.
-export const OperationSchema = z.union([InsertOperationSchema, UpdateOperationSchema]);
+const mes = z
+  .string()
+  .regex(/^\d{4}-(0[1-9]|1[0-2])$/)
+  .describe("Mes YYYY-MM");
+
+/** Qué filas de Movimientos ocultar o mostrar. Usa exactamente un criterio. */
+export const FiltroSchema = z.object({
+  mes: mes.optional().describe("Filas de ese mes (columna B)"),
+  desde: fecha.optional().describe("Rango de fechas (columna A), inclusive; va junto con hasta"),
+  hasta: fecha.optional(),
+  filas: z.array(z.number().int()).optional().describe("Números de fila sueltos"),
+  filaDesde: z.number().int().optional().describe("Rango de filas, inclusive; va junto con filaHasta"),
+  filaHasta: z.number().int().optional(),
+  antesDe: mes.optional().describe("Todas las filas anteriores a ese mes"),
+  todo: z.boolean().optional().describe("Solo en show_rows: mostrar todas las filas ocultas"),
+  incluirPendientes: z
+    .boolean()
+    .optional()
+    .describe("Solo en hide_rows y solo si dijo explícitamente 'incluyendo pendientes'"),
+});
+
+export const StartMonthOperationSchema = z.object({
+  action: z.literal("start_month"),
+  mes: mes.describe("Mes a iniciar: copia la Plantilla Mensual con fecha día 1"),
+});
+
+export const HideRowsOperationSchema = z.object({
+  action: z.literal("hide_rows"),
+  filtro: FiltroSchema,
+});
+
+export const ShowRowsOperationSchema = z.object({
+  action: z.literal("show_rows"),
+  filtro: FiltroSchema,
+});
+
+// z.union (no discriminatedUnion) para que el JSON schema use anyOf.
+export const OperationSchema = z.union([
+  InsertOperationSchema,
+  UpdateOperationSchema,
+  StartMonthOperationSchema,
+  HideRowsOperationSchema,
+  ShowRowsOperationSchema,
+]);
 export const OperationsSchema = z.array(OperationSchema).min(1);
 
 export const SaldoDichoSchema = z.object({
@@ -97,6 +139,10 @@ export const ToolInputSchema = z.object({
 export type InsertRow = z.infer<typeof InsertRowSchema>;
 export type InsertOperation = z.infer<typeof InsertOperationSchema>;
 export type UpdateOperation = z.infer<typeof UpdateOperationSchema>;
+export type StartMonthOperation = z.infer<typeof StartMonthOperationSchema>;
+export type HideRowsOperation = z.infer<typeof HideRowsOperationSchema>;
+export type ShowRowsOperation = z.infer<typeof ShowRowsOperationSchema>;
+export type Filtro = z.infer<typeof FiltroSchema>;
 export type Operation = z.infer<typeof OperationSchema>;
 export type ToolInput = z.infer<typeof ToolInputSchema>;
 export type Conversion = z.infer<typeof ConversionSchema>;

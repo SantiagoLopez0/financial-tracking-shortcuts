@@ -252,6 +252,12 @@ async function probarServidor() {
 const hoy = hoyBogota();
 const ayer = sumarDias(hoy, -1);
 const inserts = (ops) => ops.filter((o) => o.action === "insert").map((o) => o.row);
+const [anioHoy, mesHoy] = hoy.split("-").map(Number);
+const mm = (m) => String(m).padStart(2, "0");
+/** Mes ya pasado (o el actual) con ese número: "septiembre" en octubre → este año. */
+const mesPasado = (m) => `${m <= mesHoy ? anioHoy : anioHoy - 1}-${mm(m)}`;
+/** Próximo mes con ese número (o el actual): "empieza noviembre" en octubre → este año. */
+const mesProximo = (m) => `${m >= mesHoy ? anioHoy : anioHoy + 1}-${mm(m)}`;
 
 const CASOS = [
   {
@@ -389,6 +395,46 @@ const CASOS = [
       ];
     },
   },
+  // Comandos de hoja: solo se revisa el borrador y el summary (no se confirman).
+  {
+    texto: "empieza el mes",
+    esperar: (ops, summary) => {
+      const mes = hoy.slice(0, 7);
+      return [
+        [ops.length === 1 && ops[0].action === "start_month" && ops[0].mes === mes, `start_month ${mes} (fue ${JSON.stringify(ops)})`],
+        [summary.startsWith(`Inicio ${mes}:`), `summary "Inicio ${mes}: …" (fue "${summary.split("\n")[0]}")`],
+      ];
+    },
+  },
+  {
+    texto: "empieza noviembre",
+    esperar: (ops, summary) => {
+      const mes = mesProximo(11);
+      return [
+        [ops.length === 1 && ops[0].action === "start_month" && ops[0].mes === mes, `start_month ${mes} (fue ${JSON.stringify(ops)})`],
+        [new RegExp(`^Inicio ${mes}: \\d+ filas Pendiente nuevas \\(filas \\d+–\\d+\\)`).test(summary), `summary con cuántas filas y cuáles (fue "${summary.split("\n")[0]}")`],
+      ];
+    },
+  },
+  ...[
+    ["oculta las filas de septiembre", "hide_rows", { mes: mesPasado(9) }, `Ocultar`],
+    ["oculta las filas del 1 al 15 de octubre", "hide_rows", { desde: `${mesPasado(10)}-01`, hasta: `${mesPasado(10)}-15` }, "del 01 oct al 15 oct"],
+    ["oculta las filas 2 a 40", "hide_rows", { filaDesde: 2, filaHasta: 40 }, "Ocultar"],
+    ["oculta septiembre incluyendo pendientes", "hide_rows", { mes: mesPasado(9), incluirPendientes: true }, "Ocultar"],
+    ["muéstrame todo", "show_rows", { todo: true }, "Mostrar"],
+    ["muestra las filas de septiembre", "show_rows", { mes: mesPasado(9) }, "Mostrar"],
+  ].map(([texto, action, filtro, enSummary]) => ({
+    texto,
+    esperar: (ops, summary) => {
+      const op = ops[0];
+      const limpio = (f) => JSON.stringify(Object.fromEntries(Object.entries(f ?? {}).filter(([, v]) => v !== undefined && v !== false)));
+      return [
+        [ops.length === 1 && op.action === action, `${action} (fue ${JSON.stringify(ops)})`],
+        [limpio(op?.filtro) === limpio(filtro), `filtro ${limpio(filtro)} (fue ${limpio(op?.filtro)})`],
+        [summary.includes(enSummary) && /fila/.test(summary), `summary con las filas (fue "${summary.split("\n")[0]}")`],
+      ];
+    },
+  })),
 ];
 
 const resultados = [];
@@ -600,6 +646,99 @@ async function probarCommit() {
   }
 }
 
+// ---------------------------------------------------------------- 7. Inicio de mes + ocultar/mostrar (real)
+const MES_PRUEBA = "2031-01";
+
+async function filasOcultas() {
+  const res = await sheets.spreadsheets.get({
+    spreadsheetId: env.SHEET_ID,
+    ranges: ["Movimientos!A1:A3000"],
+    fields: "sheets(data(rowMetadata(hiddenByUser)))",
+  });
+  return (res.data.sheets[0].data[0].rowMetadata ?? []).flatMap((m, i) => (m.hiddenByUser ? [i + 1] : []));
+}
+
+async function probarMes() {
+  if (!DO_COMMIT) return check("Mes", "inicio de mes y ocultar/mostrar", "warn", "omitido (corre con --commit)");
+  if (!sheets) return check("Mes", "inicio de mes y ocultar/mostrar", "warn", "omitido: requiere SHEET_ID");
+  const draft = (ops) => Buffer.from(JSON.stringify(ops)).toString("base64url");
+  const commitOps = async (nombre, ops) => {
+    const r = await api("POST", "/api/commit", { draft: draft(ops) });
+    resultados.push({ caso: `mes de prueba: ${nombre}`, status: r.status, ms: r.ms, respuesta: r.json });
+    return r;
+  };
+  const ocultasAntes = await filasOcultas();
+  const pendientesDeshacer = { rows: [], hidden: [] };
+
+  try {
+    // start_month en un mes de prueba lejano (sin mes anterior: montos de la plantilla).
+    const c1 = await commitOps("start_month", [{ action: "start_month", mes: MES_PRUEBA }]);
+    if (c1.status !== 200) return check("Mes", `start_month ${MES_PRUEBA}`, "fail", `${c1.status}: ${c1.json.error}`);
+    pendientesDeshacer.rows = c1.json.rows;
+    const rows = c1.json.rows;
+    check("Mes", `start_month ${MES_PRUEBA}`, rows.length > 0 ? "ok" : "fail", `${c1.ms} ms — ${c1.json.message}`);
+    if (rows.length === 0) return;
+
+    const valores = (await sheets.spreadsheets.values.get({
+      spreadsheetId: env.SHEET_ID,
+      range: `Movimientos!A${rows[0]}:Q${rows[rows.length - 1]}`,
+      valueRenderOption: "UNFORMATTED_VALUE",
+      dateTimeRenderOption: "SERIAL_NUMBER",
+    })).data.values ?? [];
+    const formato = (await sheets.spreadsheets.values.get({
+      spreadsheetId: env.SHEET_ID,
+      range: `Movimientos!A${rows[0]}:Q${rows[rows.length - 1]}`,
+      valueRenderOption: "FORMATTED_VALUE",
+    })).data.values ?? [];
+    const serialDia1 = Math.round((Date.UTC(2031, 0, 1) - Date.UTC(1899, 11, 30)) / 86_400_000);
+    const plantilla = (await sheets.spreadsheets.values.get({ spreadsheetId: env.SHEET_ID, range: "'Plantilla Mensual'!C5:C200" })).data.values ?? [];
+    const enPlantilla = plantilla.filter((r) => String(r[0] ?? "").trim()).length;
+    check("Mes", "una fila por cada fila de la plantilla", rows.length === enPlantilla ? "ok" : "fail", `${rows.length} filas, plantilla ${enPlantilla}`);
+    const malas = valores.flatMap((r, i) => (r[0] === serialDia1 && r[14] === "Pendiente" && formato[i]?.[1] === MES_PRUEBA ? [] : [rows[i]]));
+    check("Mes", `A = día 1 (fecha), O = Pendiente, B = ${MES_PRUEBA}`, malas.length ? "fail" : "ok", malas.length ? `filas con problemas: ${malas.join(", ")}` : "");
+    const errores = formato.flatMap((r, i) => r.flatMap((v, j) => (ERROR_FORMULA.test(String(v)) ? [`fila ${rows[i]} ${letra(j)}: ${v}`] : [])));
+    check("Mes", "sin errores de fórmula", errores.length ? "fail" : "ok", errores.slice(0, 5).join("; "));
+    check("Mes", "start_month no oculta nada", JSON.stringify(await filasOcultas()) === JSON.stringify(ocultasAntes) ? "ok" : "fail");
+
+    // Idempotencia: el mismo comando otra vez no agrega filas.
+    const c2 = await commitOps("start_month otra vez", [{ action: "start_month", mes: MES_PRUEBA }]);
+    check("Mes", "start_month dos veces no duplica", c2.status === 200 && c2.json.rows.length === 0 ? "ok" : "fail", `${c2.status} — ${c2.json.message ?? c2.json.error}`);
+
+    // Ocultar el mes sin "incluyendo pendientes": todas son Pendiente, no se oculta ninguna.
+    const h1 = await commitOps("hide_rows sin pendientes", [{ action: "hide_rows", filtro: { mes: MES_PRUEBA } }]);
+    check("Mes", "ocultar el mes deja visibles las Pendiente", h1.status === 200 && h1.json.hidden.length === 0 ? "ok" : "fail", `${h1.status} — ${h1.json.message ?? h1.json.error}`);
+
+    // Incluyendo pendientes: se ocultan exactamente las filas del mes de prueba.
+    const h2 = await commitOps("hide_rows incluyendo pendientes", [{ action: "hide_rows", filtro: { mes: MES_PRUEBA, incluirPendientes: true } }]);
+    if (h2.status === 200) pendientesDeshacer.hidden = h2.json.hidden;
+    const ocultasAhora = await filasOcultas();
+    const ok = h2.status === 200 && JSON.stringify(h2.json.hidden) === JSON.stringify(rows) && rows.every((n) => ocultasAhora.includes(n));
+    check("Mes", "ocultar incluyendo pendientes oculta las filas del mes", ok ? "ok" : "fail", `${h2.status} — ${h2.json.message ?? h2.json.error}`);
+
+    // Undo de ocultar: vuelven a estar visibles.
+    const u1 = await api("POST", "/api/undo", { rows: [], previous: [], hidden: h2.json.hidden ?? [], shown: [] });
+    resultados.push({ caso: "mes de prueba: undo de hide_rows", status: u1.status, ms: u1.ms, respuesta: u1.json });
+    if (u1.status === 200) pendientesDeshacer.hidden = [];
+    check("Mes", "undo de hide_rows vuelve a mostrar", u1.status === 200 && JSON.stringify(await filasOcultas()) === JSON.stringify(ocultasAntes) ? "ok" : "fail", `${u1.status} — ${u1.json.message ?? u1.json.error}`);
+  } finally {
+    // Limpieza: deshace lo que haya quedado del mes de prueba.
+    if (pendientesDeshacer.rows.length || pendientesDeshacer.hidden.length) {
+      const u = await api("POST", "/api/undo", { rows: pendientesDeshacer.rows, previous: [], hidden: pendientesDeshacer.hidden, shown: [] });
+      resultados.push({ caso: "mes de prueba: limpieza", status: u.status, ms: u.ms, respuesta: u.json });
+      check("Mes", "limpieza del mes de prueba", u.status === 200 ? "ok" : "fail",
+        u.status === 200 ? u.json.message : `${u.status}: ${u.json.error} — BORRA A MANO las filas ${pendientesDeshacer.rows.join(", ")} (mes ${MES_PRUEBA})`);
+      if (u.status === 200 && pendientesDeshacer.rows.length) {
+        const r = pendientesDeshacer.rows;
+        const quedan = ((await sheets.spreadsheets.values.get({ spreadsheetId: env.SHEET_ID, range: `Movimientos!A${r[0]}:O${r[r.length - 1]}` })).data.values ?? [])
+          .flatMap((f, i) => ([0, 2, 6, 7, 14].some((j) => String(f[j] ?? "") !== "") ? [r[i]] : []));
+        check("Mes", "filas del mes de prueba limpias", quedan.length ? "fail" : "ok", quedan.length ? `quedaron datos en ${quedan.join(", ")}` : "");
+      }
+    }
+    check("Mes", "filas ocultas iguales a antes de la prueba", JSON.stringify(await filasOcultas()) === JSON.stringify(ocultasAntes) ? "ok" : "fail",
+      `${ocultasAntes.length} ocultas antes`);
+  }
+}
+
 // ---------------------------------------------------------------- Reporte
 function escribirReporte() {
   const stamp = new Date().toISOString().replace(/[:T]/g, "-").slice(0, 19);
@@ -663,6 +802,7 @@ try {
     await probarCorreccion();
     await probarErrores();
     await probarCommit();
+    await probarMes();
   }
 } catch (err) {
   check("Script", "error inesperado", "fail", err.stack || String(err));

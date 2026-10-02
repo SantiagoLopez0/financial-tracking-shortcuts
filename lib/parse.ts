@@ -3,7 +3,9 @@ import { z } from "zod";
 import { interpretar, type Turno } from "./claude";
 import type { DatosHoja } from "./data";
 import { HttpError } from "./http";
+import { previsualizar } from "./month";
 import { decodeDraft, encodeDraft, type Operation } from "./schema";
+import type { SheetRepo } from "./sheet/repo";
 import { resumen } from "./summary";
 
 /** Rondas por mensaje: hasta MAX_RONDAS − 1 preguntas; en la última Claude decide con supuestos. */
@@ -63,7 +65,7 @@ export function turnosRespondidos(history: string | undefined, answer?: string):
 export async function parsear(
   body: ParseBody,
   datos: DatosHoja,
-  opts: { client?: Anthropic; now?: Date } = {},
+  opts: { client?: Anthropic; now?: Date; repo?: SheetRepo } = {},
 ): Promise<ParseResponse> {
   if (!!body.previousDraft !== !!body.correction) {
     throw new HttpError(400, "previousDraft y correction van juntos");
@@ -95,9 +97,11 @@ export async function parsear(
       history: encodeHistory([...history, { q: resultado.question, a: "" }]),
     };
   }
+  // Inicio de mes y ocultar/mostrar: el summary dice cuántas filas y cuáles antes de confirmar.
+  const previas = opts.repo ? await previsualizar(opts.repo, resultado.operations) : [];
   return {
     status: "ok",
-    summary: resumen(resultado.operations, resultado.assumptions),
+    summary: resumen(resultado.operations, resultado.assumptions, previas),
     draft: encodeDraft(resultado.operations),
     history: "",
   };

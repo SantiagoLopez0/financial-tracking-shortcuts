@@ -69,7 +69,8 @@ export async function cargarDatos(repo: SheetRepo, now = Date.now()): Promise<Da
 
 const texto = (v: Cell | undefined) => (v === undefined || v === null ? "" : String(v).trim());
 
-function fechaISO(v: Cell): string {
+/** Fecha de la columna A como ISO: el Sheet la devuelve como número serial. */
+export function fechaISO(v: Cell): string {
   if (typeof v === "number") return serialToISO(v);
   return texto(v);
 }

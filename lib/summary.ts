@@ -1,4 +1,5 @@
 import { fechaCorta } from "./fechas";
+import { describirFiltro } from "./month";
 import type { InsertRow, Operation, UpdateOperation } from "./schema";
 
 const numero = new Intl.NumberFormat("es-CO", { maximumFractionDigits: 2 });
@@ -47,9 +48,25 @@ function lineaUpdate(op: UpdateOperation): string {
   return [`${titulo}: ${op.expectedConcepto} (fila ${op.rowNumber})`, ...cambios].join(" · ");
 }
 
-/** Texto plano, una línea por operación, más una línea de supuestos. */
-export function resumen(ops: Operation[], assumptions: string[]): string {
-  const lineas = ops.map((op) => (op.action === "insert" ? lineaInsert(op.row) : lineaUpdate(op)));
+/**
+ * Texto plano, una línea por operación, más una línea de supuestos. `previas` trae las líneas ya
+ * calculadas de las operaciones de hoja (inicio de mes, ocultar/mostrar), con cuántas filas y cuáles.
+ */
+export function resumen(ops: Operation[], assumptions: string[], previas: (string | undefined)[] = []): string {
+  const lineas = ops.map((op, i) => {
+    if (previas[i]) return previas[i];
+    switch (op.action) {
+      case "insert":
+        return lineaInsert(op.row);
+      case "update":
+        return lineaUpdate(op);
+      case "start_month":
+        return `Inicio ${op.mes}`;
+      case "hide_rows":
+      case "show_rows":
+        return `${op.action === "hide_rows" ? "Ocultar" : "Mostrar"} filas ${describirFiltro(op.filtro)}`.trim();
+    }
+  });
   if (assumptions.length > 0) lineas.push(`Supuse: ${assumptions.join("; ")}`);
   return lineas.join("\n");
 }

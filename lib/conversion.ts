@@ -85,7 +85,7 @@ function deltaSaldo(ops: Operation[], cuenta: string, datos: DatosHoja): number 
       if (op.row.estado !== "Pagado") continue;
       if (op.row.cuentaDestino === cuenta) delta += op.row.montoDestino ?? 0;
       if (op.row.cuentaOrigen === cuenta) delta -= op.row.montoOrigen ?? 0;
-    } else if (op.set.estado === "Pagado") {
+    } else if (op.action === "update" && op.set.estado === "Pagado") {
       const fila = filas.find((m) => m.fila === op.rowNumber);
       if (!fila || fila.estado === "Pagado") continue;
       const origen = op.set.cuentaOrigen ?? fila.cuentaOrigen;

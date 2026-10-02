@@ -24,9 +24,18 @@ export function parseA1(range: string) {
  */
 export class MockSheetRepo implements SheetRepo {
   readonly sheets = new Map<string, Cell[][]>();
+  /** Filas ocultas por hoja (1-indexadas). */
+  readonly hidden = new Map<string, Set<number>>();
 
   constructor() {
     const hoy = hoyBogota();
+    // Plantilla Mensual: datos desde la fila 5, columnas A..P (A y B vacías, como en el Sheet real).
+    this.set("Plantilla Mensual", "A5", [
+      ["", "", "Ingreso", "", "Deel", "Ingreso", "Benor", "", "USD", 1198, "USD", "", "", "", "Pagado", ""],
+      ["", "", "Gasto", "Nu Bank", "", "Fijo", "Arriendo", 1_800_000, "COP", "", "", "", "", "", "Pendiente", ""],
+      ["", "", "Gasto", "Nu Bank", "", "Fijo", "Internet", 95_000, "COP", "", "", "", "", "", "Pendiente", ""],
+      ["", "", "Gasto", "Nu Bank", "", "Suscripción", "Netflix", 45_000, "COP", "", "", "", "", "", "Pendiente", ""],
+    ]);
     this.set("Cuentas", "D3", [[3900]]);
     this.set("Cuentas", "A6", [
       ["Nu Bank", "COP", 2_500_000],
@@ -108,5 +117,18 @@ export class MockSheetRepo implements SheetRepo {
 
   async batchUpdate(data: Write[]): Promise<void> {
     data.forEach((d) => this.write(d));
+  }
+
+  async getHiddenRows(sheet: string, ultimaFila: number): Promise<number[]> {
+    return [...(this.hidden.get(sheet) ?? [])].filter((r) => r <= ultimaFila).sort((a, b) => a - b);
+  }
+
+  async setRowsHidden(sheet: string, rows: number[], hidden: boolean): Promise<void> {
+    const set = this.hidden.get(sheet) ?? new Set<number>();
+    this.hidden.set(sheet, set);
+    for (const r of rows) {
+      if (hidden) set.add(r);
+      else set.delete(r);
+    }
   }
 }

@@ -36,6 +36,17 @@
 ## Pendientes
 - Si el texto describe un pago de algo que ya está como Pendiente ("pagué el arriendo"), NO insertes: usa la operación update sobre esa fila (estado = Pagado, y monto/fecha si los di).
 
+## Comandos de la hoja (solo cuando los pido)
+- "empieza el mes" → start_month con el mes actual; "empieza noviembre" → start_month con ese mes (el próximo noviembre si no digo el año). Copia la Plantilla Mensual; no insertes las filas tú.
+- "oculta …" → hide_rows; "muestra …" / "muéstrame …" → show_rows. El filtro lleva exactamente un criterio:
+  - un mes: "oculta las filas de septiembre" → mes = "2026-09";
+  - un rango de fechas: "del 1 al 15 de octubre" → desde = "2026-10-01", hasta = "2026-10-15";
+  - números de fila: "las filas 2 a 40" → filaDesde = 2, filaHasta = 40; "las filas 5, 8 y 12" → filas;
+  - "todo antes de octubre" → antesDe = "2026-10";
+  - "muéstrame todo" → todo = true (solo para mostrar).
+- Al ocultar, las filas Pendiente quedan visibles; pon incluirPendientes = true solo si digo explícitamente "incluyendo pendientes".
+- Estos comandos no llevan supuestos de montos ni cuentas; si el mes es ambiguo, usa el más cercano y dilo en assumptions.
+
 ## Preguntas
 - Usa question SOLO si falta algo que no se puede suponer razonablemente: el monto, si es ingreso, gasto o transferencia, o cuánto recibí en una conversión sin tasa. En ese caso deja operations vacío.
 - Todo lo demás (cuenta, fecha, concepto, estado...) se supone y va en assumptions.

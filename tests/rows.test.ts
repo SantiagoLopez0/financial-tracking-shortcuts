@@ -201,6 +201,8 @@ describe("commit / undo con el mock", () => {
       message: "Guardado: 2 movimientos (filas 7-8), 1 actualización (fila 5). 1 concepto nuevo en Catálogo",
       rows: [7, 8],
       previous: [{ rowNumber: 5, concepto: "Arriendo", values: { O: "Pendiente" } }],
+      hidden: [],
+      shown: [],
     });
     expect(mov(7, "G")).toBe("Comida");
     expect(mov(8, "G")).toBe("Uber");
@@ -222,6 +224,8 @@ describe("commit / undo con el mock", () => {
       message: "Deshecho: 1 movimiento (fila 7)",
       rows: [7],
       previous: [],
+      hidden: [],
+      shown: [],
     });
     expect(mov(7, "A")).toBe("");
     expect(mov(7, "G")).toBe("");

@@ -1,5 +1,5 @@
 import type { DatosHoja } from "./data";
-import type { InsertRow, Operation } from "./schema";
+import type { Filtro, InsertRow, Operation } from "./schema";
 
 export const CATEGORIAS_GASTO = ["Fijo", "Variable", "Suscripción", "Deuda"];
 
@@ -39,6 +39,7 @@ export function normalizarOperaciones(ops: Operation[], datos: DatosHoja): Opera
         set: { ...op.set, ...(cuentaOrigen ? { cuentaOrigen } : {}) },
       };
     }
+    if (op.action !== "insert") return op;
     const row: InsertRow = { ...op.row };
     row.cuentaOrigen = buscar(cuentas, row.cuentaOrigen) ?? row.cuentaOrigen;
     row.cuentaDestino = buscar(cuentas, row.cuentaDestino) ?? row.cuentaDestino;
@@ -154,6 +155,32 @@ function validarInsert(r: InsertRow, datos: DatosHoja): string[] {
   return errores;
 }
 
+/** Un filtro de hide_rows/show_rows usa exactamente un criterio. */
+export function validarFiltro(f: Filtro, accion: "hide_rows" | "show_rows"): string[] {
+  const errores: string[] = [];
+  const criterios = [
+    f.mes !== undefined,
+    f.desde !== undefined || f.hasta !== undefined,
+    f.filas !== undefined,
+    f.filaDesde !== undefined || f.filaHasta !== undefined,
+    f.antesDe !== undefined,
+    f.todo === true,
+  ].filter(Boolean).length;
+  if (criterios !== 1) {
+    errores.push("el filtro debe usar exactamente un criterio: mes, desde/hasta, filas, filaDesde/filaHasta, antesDe o todo");
+  }
+  if ((f.desde === undefined) !== (f.hasta === undefined)) errores.push("desde y hasta van juntos");
+  else if (f.desde && f.hasta && f.desde > f.hasta) errores.push("desde es posterior a hasta");
+  if ((f.filaDesde === undefined) !== (f.filaHasta === undefined)) errores.push("filaDesde y filaHasta van juntos");
+  else if (f.filaDesde !== undefined && f.filaHasta !== undefined && f.filaDesde > f.filaHasta) {
+    errores.push("filaDesde es mayor que filaHasta");
+  }
+  if (f.filas !== undefined && f.filas.length === 0) errores.push("filas está vacío");
+  if (f.todo && accion === "hide_rows") errores.push("todo solo aplica en show_rows");
+  if (f.incluirPendientes && accion === "show_rows") errores.push("incluirPendientes solo aplica en hide_rows");
+  return errores;
+}
+
 /** Errores de reglas de negocio, vacío si todo está bien. Espera operaciones ya normalizadas. */
 export function validarOperaciones(ops: Operation[], datos: DatosHoja): string[] {
   const conocidas = new Map([...datos.recientes, ...datos.pendientes].map((m) => [m.fila, m]));
@@ -162,6 +189,11 @@ export function validarOperaciones(ops: Operation[], datos: DatosHoja): string[]
     const pref = `operations[${i}]: `;
     if (op.action === "insert") {
       errores.push(...validarInsert(op.row, datos).map((e) => pref + e));
+      return;
+    }
+    if (op.action === "start_month") return; // el mes ya lo valida el schema
+    if (op.action === "hide_rows" || op.action === "show_rows") {
+      errores.push(...validarFiltro(op.filtro, op.action).map((e) => pref + e));
       return;
     }
     const fila = conocidas.get(op.rowNumber);
