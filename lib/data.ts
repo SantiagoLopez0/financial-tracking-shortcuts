@@ -2,7 +2,7 @@ import { serialToISO } from "./fechas";
 import { RANGO_MOVIMIENTOS, PRIMERA_FILA, cell, filaTieneDatos, isEmpty, type Cell } from "./rows";
 import type { SheetRepo } from "./sheet/repo";
 
-export const RANGO_CUENTAS = "Cuentas!A6:B13";
+export const RANGO_CUENTAS = "Cuentas!A6:C13";
 export const RANGO_TRM = "Cuentas!D3";
 export const RANGO_CATALOGO = "'Catálogo'!A4:H29";
 export const FILA_CATEGORIAS = 4;
@@ -10,6 +10,8 @@ export const FILA_CATEGORIAS = 4;
 export interface Cuenta {
   nombre: string;
   moneda: string;
+  /** Saldo calculado (columna C): suma de movimientos Pagado. */
+  saldo: number | null;
 }
 
 export interface Catalogo {
@@ -110,7 +112,11 @@ export function construirDatos(
   movimientosRows: Cell[][],
 ): DatosHoja {
   const cuentas = cuentasRows
-    .map((r) => ({ nombre: texto(r[0]), moneda: texto(r[1]).toUpperCase() }))
+    .map((r) => ({
+      nombre: texto(r[0]),
+      moneda: texto(r[1]).toUpperCase(),
+      saldo: typeof r[2] === "number" ? r[2] : null,
+    }))
     .filter((c) => c.nombre !== "");
   const trm = trmRows[0]?.[0];
   const movimientos = parseMovimientos(movimientosRows);

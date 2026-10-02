@@ -29,13 +29,13 @@ export class MockSheetRepo implements SheetRepo {
     const hoy = hoyBogota();
     this.set("Cuentas", "D3", [[3900]]);
     this.set("Cuentas", "A6", [
-      ["Nu Bank", "COP"],
-      ["Bancolombia", "COP"],
-      ["Rappi", "COP"],
-      ["Ahorro", "COP"],
-      ["Efectivo", "COP"],
-      ["Deel", "USD"],
-      ["DolarApp (ARQ)", "USD"],
+      ["Nu Bank", "COP", 2_500_000],
+      ["Bancolombia", "COP", 0],
+      ["Rappi", "COP", 600_000],
+      ["Ahorro", "COP", 130_000],
+      ["Efectivo", "COP", 50_000],
+      ["Deel", "USD", 1212],
+      ["DolarApp (ARQ)", "USD", 480],
     ]);
     this.set("Catálogo", "A4", [
       ["Fijo", "Variable", "Suscripción", "Deuda", "Ingreso", "Conversión", "Ahorro", "Ajuste"],

@@ -118,13 +118,13 @@ async function probarSheets() {
 
     const res = await sheets.spreadsheets.values.batchGet({
       spreadsheetId: env.SHEET_ID,
-      ranges: ["Cuentas!A6:B13", "Cuentas!D3", "'Catálogo'!A4:H29", "Movimientos!A2:Q3000"],
+      ranges: ["Cuentas!A6:C13", "Cuentas!D3", "'Catálogo'!A4:H29", "Movimientos!A2:Q3000"],
       valueRenderOption: "UNFORMATTED_VALUE",
       dateTimeRenderOption: "SERIAL_NUMBER",
     });
     const [cuentas, trm, catalogo, movs] = res.data.valueRanges.map((v) => v.values ?? []);
-    ctxSheet.cuentas = cuentas.filter((r) => r[0]).map((r) => ({ nombre: String(r[0]).trim(), moneda: String(r[1] ?? "").trim() }));
-    check("Google Sheets", "Cuentas!A6:B13", ctxSheet.cuentas.length ? "ok" : "fail", ctxSheet.cuentas.map((c) => `${c.nombre} (${c.moneda || "sin moneda"})`).join(", ") || "vacío");
+    ctxSheet.cuentas = cuentas.filter((r) => r[0]).map((r) => ({ nombre: String(r[0]).trim(), moneda: String(r[1] ?? "").trim(), saldo: typeof r[2] === "number" ? r[2] : null }));
+    check("Google Sheets", "Cuentas!A6:C13", ctxSheet.cuentas.length ? "ok" : "fail", ctxSheet.cuentas.map((c) => `${c.nombre} (${c.moneda || "sin moneda"}, saldo ${c.saldo ?? "sin dato"})`).join(", ") || "vacío");
     for (const c of ctxSheet.cuentas) {
       if (!["COP", "USD"].includes(c.moneda.toUpperCase())) check("Google Sheets", `moneda de "${c.nombre}"`, "warn", `"${c.moneda}" no es COP ni USD`);
     }
@@ -337,24 +337,103 @@ const CASOS = [
       ];
     },
   },
+  {
+    texto: "Tengo 1200 en Deel, voy a pasar 800 a Nu, el dólar de Deel está a 3194 y me cobra 12.6 dólares",
+    esperar: (ops, summary) => {
+      const rows = inserts(ops);
+      const t = rows.find((r) => r.tipo === "Transferencia");
+      const ajuste = rows.find((r) => r.tipo === "Ajuste");
+      const saldo = ctxSheet.cuentas.find((c) => norm(c.nombre) === "deel")?.saldo;
+      const dif = typeof saldo === "number" ? Math.round((1200 - saldo) * 100) / 100 : null;
+      const checks = [
+        [t && norm(t.cuentaOrigen) === "deel" && norm(t.cuentaDestino).includes("nu"), "Transferencia Deel → Nu"],
+        [t?.montoOrigen === 800 && t?.monedaOrigen === "USD", "800 USD de origen"],
+        [t?.montoDestino === 2_514_956, `J = (800 − 12,6) × 3194 = 2.514.956 (fue ${t?.montoDestino})`],
+        [!!t?.notas?.includes("Tasa real Deel: 3.194") && !!t?.notas?.includes("Comisión: 12,6 USD / 40.244 COP"), `nota con tasa y comisión (fue "${t?.notas}")`],
+        [t?.trm === undefined, `M vacío: no dijo la TRM de Google (fue ${t?.trm})`],
+      ];
+      if (dif === null) checks.push([true, "Deel sin saldo calculado en el Sheet"]);
+      else if (dif === 0) checks.push([!ajuste, "sin Ajuste (el saldo coincide)"]);
+      else {
+        checks.push(
+          [!!ajuste && Math.abs((ajuste.montoOrigen ?? ajuste.montoDestino) - Math.abs(dif)) < 0.01, `Ajuste por ${dif} USD (saldo dicho 1200 vs Sheet ${saldo})`],
+          [summary.includes("Ajuste: Deel"), "el summary muestra el Ajuste"],
+        );
+      }
+      return checks;
+    },
+  },
+  {
+    texto: "Pasé 500 de DolarApp a Rappi a 3129, comisión 7 dólares, el dólar en Google estaba a 3221",
+    esperar: (ops) => {
+      const t = inserts(ops).find((r) => r.tipo === "Transferencia");
+      return [
+        [!!t && norm(t.cuentaOrigen).includes("dolarapp") && norm(t.cuentaDestino).includes("rappi"), "DolarApp → Rappi"],
+        [t?.montoOrigen === 500 && t?.monedaOrigen === "USD", "500 USD de origen"],
+        [t?.montoDestino === 1_542_597, `J = (500 − 7) × 3129 = 1.542.597 (fue ${t?.montoDestino})`],
+        [t?.trm === 3221, `M = TRM de Google 3221 (fue ${t?.trm})`],
+        [!!t?.notas?.includes("Tasa real DolarApp") && !!t?.notas?.includes("3.129") && !!t?.notas?.includes("Comisión: 7 USD / 21.903 COP"), `nota con tasa y comisión (fue "${t?.notas}")`],
+      ];
+    },
+  },
+  {
+    texto: "Mandé 300 dólares de Deel a Nu",
+    // Sin tasa ni monto recibido: debe preguntar; con la respuesta, armar el borrador.
+    pregunta: true,
+    respuesta: "me llegaron 940 mil",
+    esperar: (ops) => {
+      const t = inserts(ops).find((r) => r.tipo === "Transferencia");
+      return [
+        [t?.montoOrigen === 300 && t?.monedaOrigen === "USD", "300 USD de origen"],
+        [t?.montoDestino === 940_000 && t?.monedaDestino === "COP", `940.000 COP recibidos (fue ${t?.montoDestino})`],
+      ];
+    },
+  },
 ];
 
 const resultados = [];
 async function probarCasos() {
   for (const [i, caso] of CASOS.entries()) {
-    const r = await api("POST", "/api/parse", { text: caso.texto });
-    const nombre = `${i + 1}. "${caso.texto}"`;
-    const res = { caso: caso.texto, status: r.status, ms: r.ms, respuesta: r.json };
+    let nombre = `${i + 1}. "${caso.texto}"`;
+    let r = await api("POST", "/api/parse", { text: caso.texto });
+    let res = { caso: caso.texto, status: r.status, ms: r.ms, respuesta: r.json };
     resultados.push(res);
     if (r.status !== 200) {
       check("Parse", nombre, "fail", `${r.status} en ${r.ms} ms: ${r.json.error ?? JSON.stringify(r.json)}`);
       continue;
     }
+
+    if (caso.pregunta) {
+      if (r.json.status !== "question") {
+        check("Parse", nombre, "fail", `esperaba una pregunta y llegó status "${r.json.status}": ${r.json.summary ?? ""}`);
+        continue;
+      }
+      const q = r.json.question;
+      const simbolos = /[→$*#_`<>|]/.test(q);
+      const historyOk = r.json.history?.at(-1)?.q === q && r.json.history?.at(-1)?.a === "";
+      check("Parse", `${nombre} → pregunta`, simbolos || !historyOk ? "warn" : "ok",
+        `${r.ms} ms — "${q}"${simbolos ? " (tiene símbolos)" : ""}${historyOk ? "" : " (history sin la pregunta pendiente)"}`);
+      // Lo que hace el Atajo: reenviar history y la respuesta dictada.
+      r = await api("POST", "/api/parse", { text: caso.texto, history: r.json.history, answer: caso.respuesta });
+      nombre = `${nombre} + respuesta "${caso.respuesta}"`;
+      res = { caso: `${caso.texto} + respuesta "${caso.respuesta}"`, status: r.status, ms: r.ms, respuesta: r.json };
+      resultados.push(res);
+      if (r.status !== 200 || r.json.status !== "ok") {
+        check("Parse", nombre, "fail", `${r.status} en ${r.ms} ms: ${r.json.error ?? `status "${r.json.status}" ${r.json.question ?? ""}`}`);
+        continue;
+      }
+    } else if (r.json.status !== "ok") {
+      check("Parse", nombre, "warn", `${r.ms} ms — preguntó en vez de suponer: "${r.json.question}"`);
+      continue;
+    }
+
     res.operations = decodeDraft(r.json.draft);
-    const fallidas = caso.esperar(res.operations).filter(([ok]) => !ok).map(([, d]) => d);
-    const notas = res.operations.map((o) => (o.action === "insert" ? o.row.notas : o.set?.notas)).filter(Boolean);
-    for (const nota of notas) {
-      if (!r.json.summary.includes(`Nota: ${nota}`)) fallidas.push(`el summary no muestra la nota "${nota}"`);
+    const fallidas = caso.esperar(res.operations, r.json.summary).filter(([ok]) => !ok).map(([, d]) => d);
+    for (const op of res.operations) {
+      const nota = op.action === "insert" ? op.row.notas : op.set?.notas;
+      if (!nota) continue;
+      const esperado = op.action === "insert" && op.row.tipo === "Ajuste" ? `(${nota})` : `Nota: ${nota}`;
+      if (!r.json.summary.includes(esperado)) fallidas.push(`el summary no muestra la nota "${nota}"`);
     }
     res.expectativasFallidas = fallidas;
     const lento = r.ms > 20_000 ? ` — LENTO (límite de Vercel: 30 s)` : "";
@@ -370,7 +449,7 @@ async function probarCorreccion() {
   const r = await api("POST", "/api/parse", { text: CASOS[0].texto, previousDraft: base.respuesta.draft, correction });
   const res = { caso: `corrección: "${correction}"`, status: r.status, ms: r.ms, respuesta: r.json };
   resultados.push(res);
-  if (r.status !== 200) return check("Corrección", correction, "fail", `${r.status}: ${r.json.error}`);
+  if (r.status !== 200 || r.json.status !== "ok") return check("Corrección", correction, "fail", `${r.status}: ${r.json.error ?? r.json.question}`);
   res.operations = decodeDraft(r.json.draft);
   const [row] = inserts(res.operations);
   const ok = row?.cuentaOrigen === destino && row?.montoOrigen === 32000;

@@ -12,6 +12,14 @@ const fecha = z
 const monto = z.number().positive();
 const moneda = z.enum(MONEDAS);
 
+/** Datos de una conversión con tasa del proveedor; el código calcula montoDestino y la nota. */
+export const ConversionSchema = z.object({
+  proveedor: z.string().min(1).describe("Quién hizo el cambio, ej. Deel, DolarApp, Wise"),
+  tasa: monto.describe("Tasa del proveedor en COP por USD (ej. 3194)"),
+  comision: monto.optional().describe("Comisión cobrada, si la dijo"),
+  monedaComision: moneda.optional().describe("Moneda de la comisión"),
+});
+
 export const InsertRowSchema = z.object({
   fecha,
   tipo: z.enum(TIPOS),
@@ -30,6 +38,11 @@ export const InsertRowSchema = z.object({
     .boolean()
     .optional()
     .describe("true si el concepto no está en el catálogo y hay que agregarlo"),
+  conversion: ConversionSchema.optional().describe(
+    "Solo en Transferencia con cambio de moneda cuando dijo la tasa del proveedor y/o la comisión. " +
+      "No calcules montoDestino ni pongas la tasa o la comisión en notas: lo hace el sistema. " +
+      "Llena montoDestino solo si dijo cuánto recibió.",
+  ),
 });
 
 export const InsertOperationSchema = z.object({
@@ -54,9 +67,31 @@ export const UpdateOperationSchema = z.object({
 export const OperationSchema = z.union([InsertOperationSchema, UpdateOperationSchema]);
 export const OperationsSchema = z.array(OperationSchema).min(1);
 
+export const SaldoDichoSchema = z.object({
+  cuenta: z.string().min(1),
+  saldo: z.number().describe("Saldo que dijo tener, en la moneda de la cuenta"),
+  despues: z
+    .boolean()
+    .optional()
+    .describe("true si es el saldo después de los movimientos del mensaje (ej. 'me quedaron 400')"),
+});
+
 export const ToolInputSchema = z.object({
-  operations: OperationsSchema,
+  operations: z.array(OperationSchema).describe("Vacío solo si haces una pregunta"),
   assumptions: z.array(z.string()).describe("Supuestos que hiciste, en español, cortos"),
+  saldos: z
+    .array(SaldoDichoSchema)
+    .optional()
+    .describe("Saldos que mencionó ('tengo 1200 en Deel'); el sistema los compara con el Sheet"),
+  question: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      "Pregunta corta para el usuario, SOLO si falta algo que no se puede suponer: el monto, " +
+        "si es ingreso/gasto/transferencia, o cuánto recibió en una conversión sin tasa. " +
+        "En español, para leer en voz alta, sin símbolos.",
+    ),
 });
 
 export type InsertRow = z.infer<typeof InsertRowSchema>;
@@ -64,6 +99,8 @@ export type InsertOperation = z.infer<typeof InsertOperationSchema>;
 export type UpdateOperation = z.infer<typeof UpdateOperationSchema>;
 export type Operation = z.infer<typeof OperationSchema>;
 export type ToolInput = z.infer<typeof ToolInputSchema>;
+export type Conversion = z.infer<typeof ConversionSchema>;
+export type SaldoDicho = z.infer<typeof SaldoDichoSchema>;
 
 // Claves que acepta el JSON schema de strict tool use. El resto (minimum, pattern, minLength...)
 // se quita del schema enviado y se valida del lado nuestro con zod.

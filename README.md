@@ -49,7 +49,7 @@ viene en el JSON (con `\n` literales).
 
 | Ruta | Body | Respuesta |
 |---|---|---|
-| `POST /api/parse` | `{ text, previousDraft?, correction? }` | `{ summary, draft }` |
+| `POST /api/parse` | `{ text, previousDraft?, correction?, history?, answer? }` | `{ status: "ok", summary, draft }` o `{ status: "question", question, history }` |
 | `POST /api/commit` | `{ draft }` | `{ message, rows, previous }` (409 si una fila a actualizar cambió) |
 | `POST /api/undo` | `{ rows?, previous? }` | `{ message, rows, previous }` |
 
@@ -59,6 +59,38 @@ restaura los updates (409 si el concepto de una fila actualizada cambió desde e
 | `GET /api/health` | | `{ ok: true }` |
 
 Los errores responden `{ error }` con el status correspondiente (400, 401, 409, 422, 500, 502).
+
+### Preguntas
+
+Si falta algo que no se puede suponer (el monto, si es ingreso/gasto/transferencia, o cuánto llegó en
+una conversión sin tasa), `/api/parse` responde `{ status: "question", question, history }`. La pregunta
+es corta y se puede leer en voz alta. Para responder, vuelve a llamar con el mismo `text`, el `history`
+que llegó y la respuesta en `answer` (o con `history` ya completo: `[{ q, a }]`). Hay como máximo
+3 rondas por mensaje: en la tercera Claude decide con supuestos.
+
+### Atajo de iOS
+
+1. **Dictar texto** → variable `Texto`. Variable `History` = lista vacía; `Answer` = vacío.
+2. **Repetir 3 veces:**
+   - **Obtener contenido de URL** `POST /api/parse`, header `x-api-secret`, JSON
+     `{ text: Texto, history: History, answer: Answer }` → `Respuesta`.
+   - **Si** `Respuesta.status` = `question`:
+     **Leer texto** `Respuesta.question` → **Dictar texto** → `Answer`; `History` = `Respuesta.history`.
+   - **Si no:** salir del ciclo (o no hacer nada en las vueltas que quedan).
+3. **Mostrar** `Respuesta.summary` con las opciones *Guardar / Corregir / Cancelar*.
+   - *Corregir*: dictar la corrección y llamar `/api/parse` con `previousDraft: Respuesta.draft` y `correction`.
+   - *Guardar*: `POST /api/commit` con `{ draft: Respuesta.draft }` y guardar la respuesta para deshacer.
+4. **Deshacer** (otro Atajo o una opción final): `POST /api/undo` con la respuesta del commit tal cual.
+
+### Conversiones y saldos
+
+- Con la tasa del proveedor y/o la comisión, el sistema calcula el monto recibido (comisión en USD:
+  `(H − comisión) × tasa`; en COP: `H × tasa − comisión`) y escribe la nota
+  "Tasa real Deel: 3.194. Comisión: 12,6 USD / 40.244 COP". M (TRM de Google) solo se llena si se dice
+  explícitamente que es la de Google.
+- Si mencionas un saldo ("tengo 1.200 en Deel"), se compara con `Cuentas!C` (saldo calculado) y, si
+  difiere, se agrega un Ajuste: "Ajuste: Deel −12 USD (saldo dicho 1.200 vs Sheet 1.212)". Se puede quitar
+  con *Corregir*.
 
 ## Ejemplos
 
@@ -109,6 +141,16 @@ curl -s -X POST "$URL/api/parse" -H "x-api-secret: $API_SECRET" -H "content-type
   -d '{"text":"Le metí 400 mil al ahorro desde Rappi"}'
 ```
 
+7. Pregunta y respuesta
+
+```bash
+curl -s -X POST "$URL/api/parse" -H "x-api-secret: $API_SECRET" -H "content-type: application/json" \
+  -d '{"text":"Mandé 300 dólares de Deel a Nu"}'
+# → {"status":"question","question":"¿Cuántos pesos te llegaron a Nu Bank?","history":[...]}
+curl -s -X POST "$URL/api/parse" -H "x-api-secret: $API_SECRET" -H "content-type: application/json" \
+  -d '{"text":"Mandé 300 dólares de Deel a Nu","history":[{"q":"¿Cuántos pesos te llegaron a Nu Bank?","a":""}],"answer":"me llegaron 940 mil"}'
+```
+
 Corregir, confirmar y deshacer:
 
 ```bash
@@ -146,7 +188,9 @@ Escribe `reports/smoke-<fecha>.md` y `.json` (con log del servidor y sin secreto
 app/api/{parse,commit,undo,health}/route.ts   rutas (maxDuration 30)
 lib/schema.ts       zod: operaciones, JSON schema del tool, draft base64url
 lib/reglas.md       reglas de negocio (system prompt)
-lib/claude.ts       prompt, llamada a Claude y reintento con errores de validación
+lib/claude.ts       prompt, llamada a Claude, preguntas y reintento con errores de validación
+lib/parse.ts        /api/parse: rondas de preguntas, history y answer
+lib/conversion.ts   monto recibido con tasa/comisión del proveedor y Ajustes de saldo
 lib/validate.ts     reglas por tipo, moneda vs cuenta, catálogo, updates
 lib/data.ts         lectura de Cuentas, Catálogo y contexto (caché 60 s)
 lib/rows.ts         construcción de escrituras por fila y fórmulas

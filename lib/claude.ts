@@ -4,18 +4,32 @@ import Anthropic from "@anthropic-ai/sdk";
 import { z } from "zod";
 import type { DatosHoja, Movimiento } from "./data";
 import { diaSemana, hoyBogota, sumarDias } from "./fechas";
+import { aplicarConversiones, ajustesDeSaldo } from "./conversion";
 import { HttpError } from "./http";
 import { extraerMontos } from "./montos";
-import { ToolInputSchema, toolInputJsonSchema, type Operation, type ToolInput } from "./schema";
+import { ToolInputSchema, toolInputJsonSchema, type Operation } from "./schema";
 import { normalizarOperaciones, validarOperaciones } from "./validate";
 
 export const TOOL_NAME = "registrar_movimientos";
+
+export interface Turno {
+  q: string;
+  a: string;
+}
 
 export interface Pedido {
   text: string;
   previous?: Operation[];
   correction?: string;
+  /** Preguntas ya respondidas por el usuario, en orden. */
+  history?: Turno[];
+  /** false en la última ronda: Claude debe decidir con supuestos. */
+  puedePreguntar?: boolean;
 }
+
+export type Interpretacion =
+  | { tipo: "borrador"; operations: Operation[]; assumptions: string[] }
+  | { tipo: "pregunta"; question: string };
 
 let client: Anthropic | undefined;
 function getClient(): Anthropic {
@@ -82,13 +96,25 @@ ${datos.recientes.map(lineaMovimiento).join("\n") || "(ninguno)"}
 }
 
 export function construirMensaje(pedido: Pedido): string {
-  const montos = extraerMontos([pedido.text, pedido.correction ?? ""].join(" "));
+  const history = pedido.history ?? [];
+  const montos = extraerMontos(
+    [pedido.text, pedido.correction ?? "", ...history.map((t) => t.a)].join(" "),
+  );
   const pista =
     montos.length > 0
       ? `\n\nLectura literal de cantidades (referencia; aplica tú las reglas): ${montos
           .map((m) => `"${m.texto}" = ${m.valor}`)
           .join(", ")}`
       : "";
+  const conversacion =
+    history.length > 0
+      ? `\n\nPreguntas que ya respondí:\n${history.map((t) => `P: ${t.q}\nR: «${t.a}»`).join("\n")}`
+      : "";
+  const limite =
+    pedido.puedePreguntar === false
+      ? "\n\nYa no puedes hacer más preguntas: decide con tu mejor lectura y lista los supuestos."
+      : "";
+  const cola = `${conversacion}${limite}${pista}`;
   if (pedido.previous && pedido.correction) {
     return `Texto original: «${pedido.text}»
 
@@ -97,39 +123,83 @@ ${JSON.stringify(pedido.previous, null, 2)}
 
 Corrección: «${pedido.correction}»
 
-Devuelve el borrador completo corregido (todas las operaciones, no solo las que cambian).${pista}`;
+Devuelve el borrador completo corregido (todas las operaciones, no solo las que cambian).${cola}`;
   }
-  return `Texto: «${pedido.text}»${pista}`;
+  return `Texto: «${pedido.text}»${cola}`;
+}
+
+/** La pregunta se lee en voz alta en el iPhone: sin flechas ni símbolos. */
+export function limpiarPregunta(q: string): string {
+  return q
+    .replace(/→|->/g, " a ")
+    .replace(/[*_#`$<>|~^{}[\]\\]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function herramienta(): Anthropic.Tool {
   return {
     name: TOOL_NAME,
     description:
-      "Registra las operaciones que salen del texto: insert para movimientos nuevos, update para marcar/ajustar una fila existente (por ejemplo una Pendiente que se pagó). Incluye en assumptions todo lo que supusiste.",
+      "Registra las operaciones que salen del texto: insert para movimientos nuevos, update para marcar/ajustar una fila existente (por ejemplo una Pendiente que se pagó). Incluye en assumptions todo lo que supusiste. Si falta algo que no se puede suponer (ver reglas de preguntas), deja operations vacío y llena question.",
     // Sin strict: con strict el decoding restringido omite casi siempre los campos opcionales
     // (cuentas y montos). El input se valida igual con zod y con las reglas, y se reintenta.
     input_schema: toolInputJsonSchema() as Anthropic.Tool.InputSchema,
   };
 }
 
-type Revision = { ok: true; value: ToolInput } | { ok: false; errores: string[] };
+type Revision = { ok: true; value: Interpretacion } | { ok: false; errores: string[] };
 
-export function revisar(input: unknown, datos: DatosHoja): Revision {
+/**
+ * Valida el input del tool y lo convierte en una pregunta o en un borrador: normaliza nombres,
+ * completa conversiones, aplica las reglas de negocio y agrega los Ajustes de saldo.
+ */
+export function revisar(
+  input: unknown,
+  datos: DatosHoja,
+  opts: { puedePreguntar?: boolean; now?: Date } = {},
+): Revision {
   const parsed = ToolInputSchema.safeParse(input);
   if (!parsed.success) return { ok: false, errores: [z.prettifyError(parsed.error)] };
-  const operations = normalizarOperaciones(parsed.data.operations, datos);
-  const errores = validarOperaciones(operations, datos);
+  const { question, saldos = [], assumptions } = parsed.data;
+
+  if (question && opts.puedePreguntar !== false) {
+    const limpia = limpiarPregunta(question);
+    if (limpia) return { ok: true, value: { tipo: "pregunta", question: limpia } };
+  }
+  if (parsed.data.operations.length === 0) {
+    return {
+      ok: false,
+      errores: [
+        question
+          ? "ya no puedes preguntar más: decide con tu mejor lectura y lista los supuestos"
+          : "operations está vacío; si falta algo que no se puede suponer, usa question",
+      ],
+    };
+  }
+
+  const normalizadas = normalizarOperaciones(parsed.data.operations, datos);
+  const conversiones = aplicarConversiones(normalizadas, datos);
+  const errores = [...conversiones.errores, ...validarOperaciones(conversiones.ops, datos)];
+  const saldo = ajustesDeSaldo(saldos, conversiones.ops, datos, opts.now);
+  errores.push(...saldo.errores);
   if (errores.length > 0) return { ok: false, errores };
-  return { ok: true, value: { operations, assumptions: parsed.data.assumptions } };
+  return {
+    ok: true,
+    value: {
+      tipo: "borrador",
+      operations: [...saldo.ajustes, ...conversiones.ops],
+      assumptions: [...assumptions, ...saldo.supuestos],
+    },
+  };
 }
 
-/** Convierte el texto en operaciones validadas. Reintenta una vez si la validación falla. */
+/** Convierte el texto en una pregunta o en operaciones validadas. Reintenta una vez si la validación falla. */
 export async function interpretar(
   pedido: Pedido,
   datos: DatosHoja,
   opts: { client?: Anthropic; now?: Date } = {},
-): Promise<ToolInput> {
+): Promise<Interpretacion> {
   const anthropic = opts.client ?? getClient();
   const system = construirSystem(datos, opts.now);
   const tools = [herramienta()];
@@ -142,7 +212,7 @@ export async function interpretar(
       max_tokens: 16000,
       system,
       tools,
-      // Forzar la herramienta (tool_choice any/tool) da 400 en los modelos actuales: auto + strict + prompt.
+      // Forzar la herramienta (tool_choice any/tool) da 400 en los modelos actuales: auto + prompt.
       tool_choice: { type: "auto", disable_parallel_tool_use: true },
       output_config: { effort: "low" },
       messages,
@@ -163,7 +233,7 @@ export async function interpretar(
       continue;
     }
 
-    const revision = revisar(toolUse.input, datos);
+    const revision = revisar(toolUse.input, datos, { puedePreguntar: pedido.puedePreguntar, now: opts.now });
     if (revision.ok) return revision.value;
     errores = revision.errores;
     messages.push({

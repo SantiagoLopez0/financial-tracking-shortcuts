@@ -1,53 +1,7 @@
 import { describe, expect, it } from "vitest";
-import type { DatosHoja, Movimiento } from "../lib/data";
-import type { InsertRow, Operation } from "../lib/schema";
+import type { Operation } from "../lib/schema";
 import { normalizarOperaciones, validarOperaciones } from "../lib/validate";
-
-const arriendo: Movimiento = {
-  fila: 48,
-  fecha: "2026-10-01",
-  tipo: "Gasto",
-  cuentaOrigen: "Nu Bank",
-  cuentaDestino: "",
-  categoria: "Fijo",
-  concepto: "Arriendo",
-  montoOrigen: 1_800_000,
-  monedaOrigen: "COP",
-  montoDestino: "",
-  monedaDestino: "",
-  estado: "Pendiente",
-};
-
-const datos: DatosHoja = {
-  cuentas: [
-    { nombre: "Nu Bank", moneda: "COP" },
-    { nombre: "Rappi", moneda: "COP" },
-    { nombre: "Ahorro", moneda: "COP" },
-    { nombre: "Deel", moneda: "USD" },
-    { nombre: "DolarApp (ARQ)", moneda: "USD" },
-  ],
-  trmReferencia: 3900,
-  catalogo: {
-    categorias: ["Fijo", "Variable", "Suscripción", "Deuda", "Ingreso", "Conversión", "Ahorro", ""],
-    conceptos: [
-      ["Arriendo", "Luz", "Agua"],
-      ["Comida", "Transporte", "Ocio"],
-      ["Netflix"],
-      ["Tarjeta de crédito"],
-      ["Benor"],
-      ["USD → COP"],
-      ["Ahorro"],
-      [],
-    ],
-  },
-  recientes: [arriendo],
-  pendientes: [arriendo],
-};
-
-const ins = (row: Partial<InsertRow>): Operation => ({
-  action: "insert",
-  row: { fecha: "2026-10-01", estado: "Pagado", ...row } as InsertRow,
-});
+import { datos, ins } from "./fixtures";
 
 const errores = (ops: Operation[]) => validarOperaciones(normalizarOperaciones(ops, datos), datos);
 

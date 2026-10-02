@@ -3,11 +3,27 @@ import type { InsertRow, Operation, UpdateOperation } from "./schema";
 
 const numero = new Intl.NumberFormat("es-CO", { maximumFractionDigits: 2 });
 
+/** 2514956 → "2.514.956", 12.6 → "12,6" */
+export function formatoNumero(n: number): string {
+  return numero.format(n);
+}
+
 export function dinero(monto: number, moneda?: string): string {
   return `$${numero.format(monto)}${moneda ? ` ${moneda}` : ""}`;
 }
 
+/** "Ajuste: Deel −12 USD (saldo dicho 1.200 vs Sheet 1.212)" */
+function lineaAjuste(r: InsertRow): string {
+  const sale = r.montoOrigen !== undefined;
+  const cuenta = sale ? r.cuentaOrigen : r.cuentaDestino;
+  const monto = (sale ? r.montoOrigen : r.montoDestino) ?? 0;
+  const moneda = sale ? r.monedaOrigen : r.monedaDestino;
+  const signo = sale ? "−" : "+";
+  return `Ajuste: ${cuenta} ${signo}${numero.format(monto)} ${moneda}${r.notas ? ` (${r.notas})` : ""}`;
+}
+
 function lineaInsert(r: InsertRow): string {
+  if (r.tipo === "Ajuste") return lineaAjuste(r);
   const origen = r.montoOrigen !== undefined ? dinero(r.montoOrigen, r.monedaOrigen) : undefined;
   const destino = r.montoDestino !== undefined ? dinero(r.montoDestino, r.monedaDestino) : undefined;
   const monto = [origen, destino].filter(Boolean).join(" → ");
