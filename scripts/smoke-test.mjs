@@ -395,7 +395,7 @@ const resultados = [];
 async function probarCasos() {
   for (const [i, caso] of CASOS.entries()) {
     let nombre = `${i + 1}. "${caso.texto}"`;
-    let r = await api("POST", "/api/parse", { text: caso.texto });
+    let r = await api("POST", "/api/parse", { text: caso.texto, history: "", answer: "" });
     let res = { caso: caso.texto, status: r.status, ms: r.ms, respuesta: r.json };
     resultados.push(res);
     if (r.status !== 200) {
@@ -410,9 +410,15 @@ async function probarCasos() {
       }
       const q = r.json.question;
       const simbolos = /[→$*#_`<>|]/.test(q);
-      const historyOk = r.json.history?.at(-1)?.q === q && r.json.history?.at(-1)?.a === "";
+      let turnos = [];
+      try {
+        turnos = JSON.parse(Buffer.from(String(r.json.history), "base64url").toString("utf8"));
+      } catch {
+        // history no es base64url de un JSON: historyOk queda en false
+      }
+      const historyOk = typeof r.json.history === "string" && turnos.at(-1)?.q === q && turnos.at(-1)?.a === "";
       check("Parse", `${nombre} → pregunta`, simbolos || !historyOk ? "warn" : "ok",
-        `${r.ms} ms — "${q}"${simbolos ? " (tiene símbolos)" : ""}${historyOk ? "" : " (history sin la pregunta pendiente)"}`);
+        `${r.ms} ms — "${q}"${simbolos ? " (tiene símbolos)" : ""}${historyOk ? "" : " (history no es un string opaco con la pregunta pendiente)"}`);
       // Lo que hace el Atajo: reenviar history y la respuesta dictada.
       r = await api("POST", "/api/parse", { text: caso.texto, history: r.json.history, answer: caso.respuesta });
       nombre = `${nombre} + respuesta "${caso.respuesta}"`;
@@ -429,6 +435,7 @@ async function probarCasos() {
 
     res.operations = decodeDraft(r.json.draft);
     const fallidas = caso.esperar(res.operations, r.json.summary).filter(([ok]) => !ok).map(([, d]) => d);
+    if (r.json.history !== "") fallidas.push(`status ok debe traer history "" (trajo ${JSON.stringify(r.json.history)})`);
     for (const op of res.operations) {
       const nota = op.action === "insert" ? op.row.notas : op.set?.notas;
       if (!nota) continue;

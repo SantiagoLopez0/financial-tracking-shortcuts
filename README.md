@@ -49,14 +49,14 @@ viene en el JSON (con `\n` literales).
 
 | Ruta | Body | Respuesta |
 |---|---|---|
-| `POST /api/parse` | `{ text, previousDraft?, correction?, history?, answer? }` | `{ status: "ok", summary, draft }` o `{ status: "question", question, history }` |
+| `POST /api/parse` | `{ text, previousDraft?, correction?, history?, answer? }` | `{ status: "ok", summary, draft, history: "" }` o `{ status: "question", question, history }` |
 | `POST /api/commit` | `{ draft }` | `{ message, rows, previous }` (409 si una fila a actualizar cambió) |
 | `POST /api/undo` | `{ rows?, previous? }` | `{ message, rows, previous }` |
+| `GET /api/health` | | `{ ok: true }` |
 
 `rows` son las filas insertadas y `previous` los valores que tenían las filas actualizadas antes del
 commit. Para deshacer todo, manda a `/api/undo` la respuesta del commit tal cual: limpia los inserts y
 restaura los updates (409 si el concepto de una fila actualizada cambió desde entonces).
-| `GET /api/health` | | `{ ok: true }` |
 
 Los errores responden `{ error }` con el status correspondiente (400, 401, 409, 422, 500, 502).
 
@@ -64,19 +64,22 @@ Los errores responden `{ error }` con el status correspondiente (400, 401, 409, 
 
 Si falta algo que no se puede suponer (el monto, si es ingreso/gasto/transferencia, o cuánto llegó en
 una conversión sin tasa), `/api/parse` responde `{ status: "question", question, history }`. La pregunta
-es corta y se puede leer en voz alta. Para responder, vuelve a llamar con el mismo `text`, el `history`
-que llegó y la respuesta en `answer` (o con `history` ya completo: `[{ q, a }]`). Hay como máximo
-3 rondas por mensaje: en la tercera Claude decide con supuestos.
+es corta y se puede leer en voz alta. `history` es un string opaco (no hay que leerlo ni armarlo) que ya
+incluye la pregunta actual. Para responder, vuelve a llamar con el mismo `text`, ese `history` y la
+respuesta en `answer`. Hay como máximo 3 rondas por mensaje: en la tercera Claude decide con supuestos.
+
+Las respuestas siempre traen `status` y `history` (`""` cuando `status` es `ok`). En el body, las claves
+vacías (`""` o `null`) cuentan como ausentes, así que el Atajo puede mandar siempre `text`, `history` y `answer`.
 
 ### Atajo de iOS
 
-1. **Dictar texto** → variable `Texto`. Variable `History` = lista vacía; `Answer` = vacío.
+1. **Dictar texto** → variable `Texto`. Variables de texto `History`, `Answer` y `Status` vacías.
 2. **Repetir 3 veces:**
-   - **Obtener contenido de URL** `POST /api/parse`, header `x-api-secret`, JSON
-     `{ text: Texto, history: History, answer: Answer }` → `Respuesta`.
-   - **Si** `Respuesta.status` = `question`:
-     **Leer texto** `Respuesta.question` → **Dictar texto** → `Answer`; `History` = `Respuesta.history`.
-   - **Si no:** salir del ciclo (o no hacer nada en las vueltas que quedan).
+   - **Si** `Status` no es `ok` (en las vueltas que sobran no se hace nada):
+     - **Obtener contenido de URL** `POST /api/parse`, header `x-api-secret`, JSON
+       `{ text: Texto, history: History, answer: Answer }` → `Respuesta`.
+     - `Status` = `Respuesta.status`; `History` = `Respuesta.history` (texto opaco; `""` con borrador).
+     - **Si** `Status` = `question`: **Leer texto** `Respuesta.question` → **Dictar texto** → `Answer`.
 3. **Mostrar** `Respuesta.summary` con las opciones *Guardar / Corregir / Cancelar*.
    - *Corregir*: dictar la corrección y llamar `/api/parse` con `previousDraft: Respuesta.draft` y `correction`.
    - *Guardar*: `POST /api/commit` con `{ draft: Respuesta.draft }` y guardar la respuesta para deshacer.
@@ -146,9 +149,10 @@ curl -s -X POST "$URL/api/parse" -H "x-api-secret: $API_SECRET" -H "content-type
 ```bash
 curl -s -X POST "$URL/api/parse" -H "x-api-secret: $API_SECRET" -H "content-type: application/json" \
   -d '{"text":"Mandé 300 dólares de Deel a Nu"}'
-# → {"status":"question","question":"¿Cuántos pesos te llegaron a Nu Bank?","history":[...]}
+# → {"status":"question","question":"¿Cuántos pesos te llegaron a Nu Bank?","history":"W3sicSI6..."}
 curl -s -X POST "$URL/api/parse" -H "x-api-secret: $API_SECRET" -H "content-type: application/json" \
-  -d '{"text":"Mandé 300 dólares de Deel a Nu","history":[{"q":"¿Cuántos pesos te llegaron a Nu Bank?","a":""}],"answer":"me llegaron 940 mil"}'
+  -d '{"text":"Mandé 300 dólares de Deel a Nu","history":"<history de la respuesta anterior>","answer":"me llegaron 940 mil"}'
+# → {"status":"ok","summary":"Transferencia · $300 USD → $940.000 COP · ...","draft":"...","history":""}
 ```
 
 Corregir, confirmar y deshacer:
